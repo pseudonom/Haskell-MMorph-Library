@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE CPP, RankNTypes, PolyKinds #-}
 
 {-| A monad morphism is a natural transformation:
@@ -93,8 +95,6 @@ import Control.Applicative.Backwards (Backwards (Backwards))
 import Control.Applicative.Lift (Lift (Pure, Other))
 
 -- For documentation
-import Control.Exception (try, IOException)
-import Control.Monad ((=<<), (>=>), (<=<), join)
 import Data.Functor.Identity (Identity)
 
 {-| A functor in the category of monads, using 'hoist' as the analog of 'fmap':
@@ -107,7 +107,7 @@ class MFunctor t where
     {-| Lift a monad morphism from @m@ to @n@ into a monad morphism from
         @(t m)@ to @(t n)@
     -}
-    hoist :: (Monad m) => (forall a . m a -> n a) -> t m b -> t n b
+    hoist :: (forall a . m a -> n a) -> t m b -> t n b
 
 instance MFunctor (E.ErrorT e) where
     hoist nat m = E.ErrorT (nat (E.runErrorT m))
@@ -172,18 +172,18 @@ generalize = return . runIdentity
 >
 > embed g (embed f t) = embed (\m -> embed g (f m)) t
 -}
-class (MFunctor t, MonadTrans t) => MMonad t where
+class (MFunctor t) => MMonad t n where
     {-| Embed a newly created 'MMonad' layer within an existing layer
 
         'embed' is analogous to ('=<<')
     -}
-    embed :: (Monad n) => (forall a . m a -> t n a) -> t m b -> t n b
+    embed :: (forall a . m a -> t n a) -> t m b -> t n b
 
 {-| Squash two 'MMonad' layers into a single layer
 
     'squash' is analogous to 'join'
 -}
-squash :: (Monad m, MMonad t) => t (t m) a -> t m a
+squash :: (MMonad t m) => t (t m) a -> t m a
 squash = embed id
 {-# INLINABLE squash #-}
 
@@ -195,7 +195,7 @@ infixl 2 <|<, |>=
     ('>|>') is analogous to ('>=>')
 -}
 (>|>)
-    :: (Monad m3, MMonad t)
+    :: (MMonad t m3)
     => (forall a . m1 a -> t m2 a)
     -> (forall b . m2 b -> t m3 b)
     ->             m1 c -> t m3 c
@@ -207,7 +207,7 @@ infixl 2 <|<, |>=
     ('<|<') is analogous to ('<=<')
 -}
 (<|<)
-    :: (Monad m3, MMonad t)
+    :: (MMonad t m3)
     => (forall b . m2 b -> t m3 b)
     -> (forall a . m1 a -> t m2 a)
     ->             m1 c -> t m3 c
@@ -218,7 +218,7 @@ infixl 2 <|<, |>=
 
     ('=<|') is analogous to ('=<<')
 -}
-(=<|) :: (Monad n, MMonad t) => (forall a . m a -> t n a) -> t m b -> t n b
+(=<|) :: (MMonad t n) => (forall a . m a -> t n a) -> t m b -> t n b
 (=<|) = embed
 {-# INLINABLE (=<|) #-}
 
@@ -226,11 +226,11 @@ infixl 2 <|<, |>=
 
     ('|>=') is analogous to ('>>=')
 -}
-(|>=) :: (Monad n, MMonad t) => t m b -> (forall a . m a -> t n a) -> t n b
+(|>=) :: (MMonad t n) => t m b -> (forall a . m a -> t n a) -> t n b
 t |>= f = embed f t
 {-# INLINABLE (|>=) #-}
 
-instance (E.Error e) => MMonad (E.ErrorT e) where
+instance (Monad n) => MMonad (E.ErrorT e) n where
     embed f m = E.ErrorT (do
         x <- E.runErrorT (f (E.runErrorT m))
         return (case x of
@@ -238,7 +238,7 @@ instance (E.Error e) => MMonad (E.ErrorT e) where
             Right (Left  e) -> Left e
             Right (Right a) -> Right a ) )
 
-instance MMonad (Ex.ExceptT e) where
+instance (Monad n) => MMonad (Ex.ExceptT e) n where
     embed f m = Ex.ExceptT (do
         x <- Ex.runExceptT (f (Ex.runExceptT m))
         return (case x of
@@ -246,15 +246,15 @@ instance MMonad (Ex.ExceptT e) where
             Right (Left  e) -> Left e
             Right (Right a) -> Right a ) )
 
-instance MMonad I.IdentityT where
+instance MMonad I.IdentityT n where
     embed f m = f (I.runIdentityT m)
 
-instance MMonad L.ListT where
+instance (Monad n) => MMonad L.ListT n where
     embed f m = L.ListT (do
         x <- L.runListT (f (L.runListT m))
         return (concat x))
 
-instance MMonad M.MaybeT where
+instance (Monad n) => MMonad M.MaybeT n where
     embed f m = M.MaybeT (do
         x <- M.runMaybeT (f (M.runMaybeT m))
         return (case x of
@@ -262,15 +262,15 @@ instance MMonad M.MaybeT where
             Just Nothing  -> Nothing
             Just (Just a) -> Just a ) )
 
-instance MMonad (R.ReaderT r) where
+instance MMonad (R.ReaderT r) n where
     embed f m = R.ReaderT (\i -> R.runReaderT (f (R.runReaderT m i)) i)
 
-instance (Monoid w) => MMonad (W.WriterT w) where
+instance (Monoid w, Monad n) => MMonad (W.WriterT w) n where
     embed f m = W.WriterT (do
         ~((a, w1), w2) <- W.runWriterT (f (W.runWriterT m))
         return (a, mappend w1 w2) )
 
-instance (Monoid w) => MMonad (W'.WriterT w) where
+instance (Monoid w, Monad n) => MMonad (W'.WriterT w) n where
     embed f m = W'.WriterT (do
         ((a, w1), w2) <- W'.runWriterT (f (W'.runWriterT m))
         return (a, mappend w1 w2) )
